@@ -102,7 +102,7 @@ class ConnectionLifecycleParser:
             logger.info(f"🟢 Player Joined: {player_id} successfully registered")
             
             # Create join embed
-            return await self._create_join_embed(player_id, player_name)
+            return await self._create_join_embed(player_id, player_name, server_key)
         
         # Check for Disconnect (d1 or d2)
         elif match := self.lifecycle_patterns['disconnect_post_join'].search(line):
@@ -115,7 +115,7 @@ class ConnectionLifecycleParser:
                 logger.info(f"🔴 Post-Join Disconnect: {player_id} left after joining")
                 
                 # Create leave embed
-                return await self._create_leave_embed(player_id)
+                return await self._create_leave_embed(player_id, player_name, server_key)
                 
             elif player_id in self.player_states[server_key]['players_queued']:
                 event_type = 'd2'
@@ -164,25 +164,61 @@ class ConnectionLifecycleParser:
     async def _update_voice_channels(self, server_key: str, player_count: int, queue_count: int):
         """Update voice channel names with current player and queue counts"""
         try:
-            # Extract guild_id from server_key (format: guild_id_server_id)
-            guild_id = int(server_key.split('_')[0])
-            guild = self.bot.get_guild(guild_id)
+            # Extract guild_id and server_id from server_key (format: guild_id_server_id)
+            parts = server_key.split('_')
+            guild_id = int(parts[0])
+            server_id = parts[1] if len(parts) > 1 else 'unknown'
             
+            guild = self.bot.get_guild(guild_id)
             if not guild:
                 return
-                
-            # Find voice channels to update
-            for channel in guild.voice_channels:
-                if 'players:' in channel.name.lower() or 'queue:' in channel.name.lower():
-                    new_name = f"Players: {player_count} / Queue: {queue_count}"
-                    if channel.name != new_name:
-                        await channel.edit(name=new_name)
-                        logger.info(f"🔊 Updated voice channel: {new_name}")
+
+            # Get guild configuration to find the configured playercountvc channel
+            if not hasattr(self.bot, 'db_manager') or not self.bot.db_manager:
+                logger.warning("Bot database not available for voice channel update")
+                return
+
+            guild_config = await self.bot.db_manager.get_guild(guild_id)
+            if not guild_config:
+                return
+
+            # Look for playercountvc channel (set by /setchannel playercountvc command)
+            channels = guild_config.get('channels', {})
+            voice_channel_id = channels.get('playercountvc')
+
+            if not voice_channel_id:
+                logger.debug(f"No playercountvc channel configured for guild {guild_id}")
+                return
+
+            voice_channel = guild.get_channel(voice_channel_id)
+            if not voice_channel:
+                logger.warning(f"Voice channel {voice_channel_id} not found for guild {guild_id}")
+                return
+
+            # Get server name from guild config
+            servers = guild_config.get('servers', [])
+            server_name = 'Unknown Server'
+            for server_config in servers:
+                if str(server_config.get('_id', '')) == server_id:
+                    server_name = server_config.get('name', f'Server {server_id}')
+                    break
+
+            # Format: "📈 ServerName: players/max (queue in queue)" 
+            max_players = 50  # Default, should be updated from server config
+            if queue_count > 0:
+                new_name = f"📈 {server_name}: {player_count}/{max_players} ({queue_count} in queue)"
+            else:
+                new_name = f"📈 {server_name}: {player_count}/{max_players}"
+
+            # Update channel name if different
+            if voice_channel.name != new_name:
+                await voice_channel.edit(name=new_name)
+                logger.info(f"🔊 Updated voice channel: {new_name}")
                         
         except Exception as e:
             logger.error(f"Failed to update voice channels: {e}")
 
-    async def _create_join_embed(self, player_id: str, player_name: Optional[str] = None) -> Dict[str, Any]:
+    async def _create_join_embed(self, player_id: str, player_name: Optional[str] = None, server_key: str = None) -> Dict[str, Any]:
         """Create themed embed for player join event"""
         embed_data = {
             'connection_id': player_name or player_id,
@@ -190,9 +226,15 @@ class ConnectionLifecycleParser:
         }
         
         embed, file_attachment = await EmbedFactory.build('player_join', embed_data)
-        return {'type': 'player_connection', 'embed': embed, 'file': file_attachment}
+        result = {'type': 'player_connection', 'embed': embed, 'file': file_attachment}
+        
+        # Send to connections channel if configured
+        if server_key:
+            await self._send_connection_embed(result, server_key)
+        
+        return result
 
-    async def _create_leave_embed(self, player_id: str, player_name: Optional[str] = None) -> Dict[str, Any]:
+    async def _create_leave_embed(self, player_id: str, player_name: Optional[str] = None, server_key: str = None) -> Dict[str, Any]:
         """Create themed embed for player leave event"""
         embed_data = {
             'connection_id': player_name or player_id,
@@ -200,7 +242,55 @@ class ConnectionLifecycleParser:
         }
         
         embed, file_attachment = await EmbedFactory.build('player_leave', embed_data)
-        return {'type': 'player_disconnection', 'embed': embed, 'file': file_attachment}
+        result = {'type': 'player_disconnection', 'embed': embed, 'file': file_attachment}
+        
+        # Send to connections channel if configured
+        if server_key:
+            await self._send_connection_embed(result, server_key)
+        
+        return result
+
+    async def _send_connection_embed(self, embed_result: Dict[str, Any], server_key: str):
+        """Send connection embed to the correct connections channel"""
+        try:
+            # Extract guild_id from server_key
+            guild_id = int(server_key.split('_')[0])
+            
+            # Get guild configuration
+            if not hasattr(self.bot, 'db_manager') or not self.bot.db_manager:
+                logger.warning("Bot database not available for sending connection embeds")
+                return
+
+            guild_config = await self.bot.db_manager.get_guild(guild_id)
+            if not guild_config:
+                return
+
+            # Look for connections channel (set by /setchannel connections command)
+            channels = guild_config.get('channels', {})
+            connections_channel_id = channels.get('connections')
+
+            if not connections_channel_id:
+                logger.debug(f"No connections channel configured for guild {guild_id}")
+                return
+
+            channel = self.bot.get_channel(connections_channel_id)
+            if not channel:
+                logger.warning(f"Connections channel {connections_channel_id} not found for guild {guild_id}")
+                return
+
+            # Send the embed
+            embed = embed_result.get('embed')
+            file_attachment = embed_result.get('file')
+            
+            if embed:
+                if file_attachment:
+                    await channel.send(embed=embed, file=file_attachment)
+                else:
+                    await channel.send(embed=embed)
+                logger.debug(f"Sent connection embed to connections channel: {channel.name}")
+
+        except Exception as e:
+            logger.error(f"Failed to send connection embed: {e}")
 
     def get_live_counts(self, server_key: str) -> Dict[str, int]:
         """Get current live player and queue counts for a server"""

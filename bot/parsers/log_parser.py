@@ -1405,8 +1405,8 @@ class LogParser:
             lines = log_content.splitlines()
             logger.info(f"Processing {len(lines)} new lines from log content")
 
-            # Process in smaller batches for better performance
-            batch_size = 50
+            # Process in larger batches for better performance with 100+ servers
+            batch_size = 500
             new_events = 0
             processed_lines = 0
             total_batches = (len(lines) + batch_size - 1) // batch_size
