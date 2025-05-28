@@ -1362,7 +1362,8 @@ class LogParser:
             new_events = 0
 
             for line in new_lines:
-                event_data = self.parse_log_line(line)
+                server_key = self.get_server_status_key(guild_id, server_id)
+                event_data = await self.parse_log_line(line, server_key, guild_id)
                 if event_data:
                     # Process player tracking events
                     await self.process_log_event(guild_id, server_id, event_data)
@@ -1420,7 +1421,8 @@ class LogParser:
 
                 for line_num, line in enumerate(batch, start=i+1):
                     processed_lines += 1
-                    event_data = self.parse_log_line(line)
+                    server_key = self.get_server_status_key(guild_id, server_id)
+                    event_data = await self.parse_log_line(line, server_key, guild_id)
                     if event_data:
                         logger.debug(f"Line {line_num}: Parsed event: {event_data['type']}")
                         # Process player tracking events
@@ -1472,7 +1474,8 @@ class LogParser:
                 if not line.strip():
                     continue
 
-                event_data = self.parse_log_line(line)
+                server_key = self.get_server_status_key(guild_id, server_id)
+                event_data = await self.parse_log_line(line, server_key, guild_id)
                 if event_data:
                     # Process player tracking events
                     await self.process_log_event(guild_id, server_id, event_data)
