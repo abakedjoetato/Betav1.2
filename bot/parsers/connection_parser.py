@@ -29,6 +29,9 @@ class ConnectionLifecycleParser:
         # Player state tracking per server  
         self.player_states: Dict[str, Dict[str, Set[str]]] = {}
         
+        # Player ID to name mapping cache per server
+        self.player_names: Dict[str, Dict[str, str]] = {}
+        
         # Compile robust regex patterns for the 4 lifecycle events
         self.lifecycle_patterns = {
             # 1. Queue Join (jq) - Player enters queue
@@ -88,6 +91,10 @@ class ConnectionLifecycleParser:
             event_type = 'jq'
             
             if player_id:
+                # Cache the player name if we have it
+                if player_name:
+                    await self._cache_player_name(server_key, player_id, player_name)
+                
                 self.player_states[server_key]['players_queued'].add(player_id)
                 await self._update_live_counts(server_key)
                 logger.info(f"🟡 Queue Join: {player_name} ({player_id}) joined queue")
@@ -99,10 +106,16 @@ class ConnectionLifecycleParser:
             
             self.player_states[server_key]['players_joined'].add(player_id)
             await self._update_live_counts(server_key)
+            
+            # Try to extract player name from the current line or previous context
+            extracted_name = self._extract_player_name_from_log_line(line, player_id)
+            if extracted_name:
+                await self._cache_player_name(server_key, player_id, extracted_name)
+            
             logger.info(f"🟢 Player Joined: {player_id} successfully registered")
             
-            # Create join embed
-            return await self._create_join_embed(player_id, player_name, server_key)
+            # Create join embed with resolved name
+            return await self._create_join_embed(player_id, extracted_name, server_key)
         
         # Check for Disconnect (d1 or d2)
         elif match := self.lifecycle_patterns['disconnect_post_join'].search(line):
@@ -114,8 +127,13 @@ class ConnectionLifecycleParser:
                 self.player_states[server_key]['players_disconnected_post'].add(player_id)
                 logger.info(f"🔴 Post-Join Disconnect: {player_id} left after joining")
                 
-                # Create leave embed
-                return await self._create_leave_embed(player_id, player_name, server_key)
+                # Try to extract player name from the current line
+                extracted_name = self._extract_player_name_from_log_line(line, player_id)
+                if extracted_name:
+                    await self._cache_player_name(server_key, player_id, extracted_name)
+                
+                # Create leave embed with resolved name
+                return await self._create_leave_embed(player_id, extracted_name, server_key)
                 
             elif player_id in self.player_states[server_key]['players_queued']:
                 event_type = 'd2'
@@ -220,8 +238,12 @@ class ConnectionLifecycleParser:
 
     async def _create_join_embed(self, player_id: str, player_name: Optional[str] = None, server_key: str = None) -> Dict[str, Any]:
         """Create themed embed for player join event"""
+        # Resolve player name if not provided
+        resolved_name = await self._resolve_player_name(player_id, server_key)
+        display_name = resolved_name or player_name or player_id
+        
         embed_data = {
-            'connection_id': player_name or player_id,
+            'connection_id': display_name,
             'timestamp': datetime.now(timezone.utc)
         }
         
@@ -236,8 +258,12 @@ class ConnectionLifecycleParser:
 
     async def _create_leave_embed(self, player_id: str, player_name: Optional[str] = None, server_key: str = None) -> Dict[str, Any]:
         """Create themed embed for player leave event"""
+        # Resolve player name if not provided
+        resolved_name = await self._resolve_player_name(player_id, server_key)
+        display_name = resolved_name or player_name or player_id
+        
         embed_data = {
-            'connection_id': player_name or player_id,
+            'connection_id': display_name,
             'timestamp': datetime.now(timezone.utc)
         }
         
@@ -303,4 +329,89 @@ class ConnectionLifecycleParser:
             del self.server_counts[server_key]
         if server_key in self.player_states:
             del self.player_states[server_key]
+        if server_key in self.player_names:
+            del self.player_names[server_key]
         logger.info(f"🔄 Reset player counts for server {server_key}")
+
+    async def _resolve_player_name(self, player_id: str, server_key: str) -> Optional[str]:
+        """Resolve player ID to player name using database lookup and caching"""
+        try:
+            # Check cache first
+            if server_key in self.player_names and player_id in self.player_names[server_key]:
+                return self.player_names[server_key][player_id]
+            
+            # Extract guild_id and server_id from server_key
+            parts = server_key.split('_')
+            guild_id = int(parts[0])
+            server_id = parts[1] if len(parts) > 1 else 'unknown'
+            
+            # Search for player name in recent kill events
+            if hasattr(self.bot, 'db_manager') and self.bot.db_manager:
+                # Look for recent kills/deaths involving this player ID
+                recent_kills = await self.bot.db_manager.get_recent_kills(guild_id, server_id, limit=100)
+                
+                for kill_event in recent_kills:
+                    # Check if this player ID appears as killer
+                    if kill_event.get('killer_id') == player_id and kill_event.get('killer'):
+                        player_name = kill_event.get('killer')
+                        await self._cache_player_name(server_key, player_id, player_name)
+                        return player_name
+                    
+                    # Check if this player ID appears as victim
+                    if kill_event.get('victim_id') == player_id and kill_event.get('victim'):
+                        player_name = kill_event.get('victim')
+                        await self._cache_player_name(server_key, player_id, player_name)
+                        return player_name
+                
+                # Search in PvP data for linked characters
+                players_cursor = self.bot.db_manager.players.find({'guild_id': guild_id})
+                async for player_doc in players_cursor:
+                    # Check if this player ID matches any character names (approximate match)
+                    linked_chars = player_doc.get('linked_characters', [])
+                    for char_name in linked_chars:
+                        # Simple check if player_id is contained in character name or vice versa
+                        if player_id.lower() in char_name.lower() or char_name.lower() in player_id.lower():
+                            await self._cache_player_name(server_key, player_id, char_name)
+                            return char_name
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Failed to resolve player name for ID {player_id}: {e}")
+            return None
+
+    async def _cache_player_name(self, server_key: str, player_id: str, player_name: str):
+        """Cache player ID to name mapping"""
+        if server_key not in self.player_names:
+            self.player_names[server_key] = {}
+        self.player_names[server_key][player_id] = player_name
+        logger.debug(f"Cached player name: {player_id} -> {player_name}")
+
+    def _extract_player_name_from_log_line(self, line: str, player_id: str) -> Optional[str]:
+        """Extract player name from log lines that contain the player ID"""
+        try:
+            # Look for patterns that contain both the player ID and a potential name
+            # Pattern: "Player Name (ID)" or "Name|ID" or similar
+            import re
+            
+            # Try to find name patterns near the player ID
+            patterns = [
+                rf'Name=([^&\s]+).*{re.escape(player_id)}',  # Name= parameter before ID
+                rf'{re.escape(player_id)}.*Name=([^&\s]+)',  # ID before Name= parameter
+                rf'Player\s+([^|]+)\|{re.escape(player_id)}',  # Player Name|ID format
+                rf'([A-Za-z][A-Za-z0-9_\s]+)\s*\({re.escape(player_id)}\)',  # Name (ID) format
+            ]
+            
+            for pattern in patterns:
+                match = re.search(pattern, line, re.IGNORECASE)
+                if match:
+                    name = match.group(1).strip()
+                    # Validate that it looks like a player name
+                    if len(name) > 1 and not name.isdigit():
+                        return name
+            
+            return None
+            
+        except Exception as e:
+            logger.debug(f"Failed to extract player name from log line: {e}")
+            return None
