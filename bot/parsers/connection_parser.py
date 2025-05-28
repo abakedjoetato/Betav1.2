@@ -32,6 +32,10 @@ class ConnectionLifecycleParser:
         # Player ID to name mapping cache per server
         self.player_names: Dict[str, Dict[str, str]] = {}
         
+        # Track recent connection messages to prevent duplicates (server_key -> player_id -> timestamp)
+        self.recent_connections: Dict[str, Dict[str, float]] = {}
+        self.recent_disconnections: Dict[str, Dict[str, float]] = {}
+        
         # Compile robust regex patterns for the 4 lifecycle events
         self.lifecycle_patterns = {
             # 1. Queue Join (jq) - Player enters queue
@@ -238,9 +242,19 @@ class ConnectionLifecycleParser:
 
     async def _create_join_embed(self, player_id: str, player_name: Optional[str] = None, server_key: str = None) -> Dict[str, Any]:
         """Create themed embed for player join event"""
-        # Resolve player name if not provided
+        # Check for duplicate within last minute
+        if self._is_duplicate_connection(server_key, player_id, 'join'):
+            logger.debug(f"Blocking duplicate join message for {player_id}")
+            return None
+            
+        # Resolve player name if not provided - NEVER show player ID
         resolved_name = await self._resolve_player_name(player_id, server_key)
-        display_name = resolved_name or player_name or player_id
+        display_name = resolved_name or player_name
+        
+        # If we still don't have a name, don't send the embed
+        if not display_name or display_name == player_id:
+            logger.warning(f"No player name resolved for ID {player_id}, skipping embed")
+            return None
         
         embed_data = {
             'connection_id': display_name,
@@ -250,6 +264,9 @@ class ConnectionLifecycleParser:
         embed, file_attachment = await EmbedFactory.build('player_join', embed_data)
         result = {'type': 'player_connection', 'embed': embed, 'file': file_attachment}
         
+        # Mark as sent to prevent duplicates
+        self._mark_connection_sent(server_key, player_id, 'join')
+        
         # Send to connections channel if configured
         if server_key:
             await self._send_connection_embed(result, server_key)
@@ -258,9 +275,19 @@ class ConnectionLifecycleParser:
 
     async def _create_leave_embed(self, player_id: str, player_name: Optional[str] = None, server_key: str = None) -> Dict[str, Any]:
         """Create themed embed for player leave event"""
-        # Resolve player name if not provided
+        # Check for duplicate within last minute
+        if self._is_duplicate_connection(server_key, player_id, 'leave'):
+            logger.debug(f"Blocking duplicate leave message for {player_id}")
+            return None
+            
+        # Resolve player name if not provided - NEVER show player ID
         resolved_name = await self._resolve_player_name(player_id, server_key)
-        display_name = resolved_name or player_name or player_id
+        display_name = resolved_name or player_name
+        
+        # If we still don't have a name, don't send the embed
+        if not display_name or display_name == player_id:
+            logger.warning(f"No player name resolved for ID {player_id}, skipping embed")
+            return None
         
         embed_data = {
             'connection_id': display_name,
@@ -269,6 +296,9 @@ class ConnectionLifecycleParser:
         
         embed, file_attachment = await EmbedFactory.build('player_leave', embed_data)
         result = {'type': 'player_disconnection', 'embed': embed, 'file': file_attachment}
+        
+        # Mark as sent to prevent duplicates
+        self._mark_connection_sent(server_key, player_id, 'leave')
         
         # Send to connections channel if configured
         if server_key:
@@ -415,3 +445,47 @@ class ConnectionLifecycleParser:
         except Exception as e:
             logger.debug(f"Failed to extract player name from log line: {e}")
             return None
+
+    def _is_duplicate_connection(self, server_key: str, player_id: str, event_type: str) -> bool:
+        """Check if this connection event is a duplicate within the last minute"""
+        import time
+        current_time = time.time()
+        
+        if event_type == 'join':
+            recent_dict = self.recent_connections
+        else:
+            recent_dict = self.recent_disconnections
+            
+        if server_key not in recent_dict:
+            recent_dict[server_key] = {}
+            
+        # Check if this player had a recent event
+        if player_id in recent_dict[server_key]:
+            last_time = recent_dict[server_key][player_id]
+            if current_time - last_time < 60:  # Within 1 minute
+                return True
+                
+        return False
+        
+    def _mark_connection_sent(self, server_key: str, player_id: str, event_type: str):
+        """Mark a connection event as sent to prevent duplicates"""
+        import time
+        current_time = time.time()
+        
+        if event_type == 'join':
+            recent_dict = self.recent_connections
+        else:
+            recent_dict = self.recent_disconnections
+            
+        if server_key not in recent_dict:
+            recent_dict[server_key] = {}
+            
+        recent_dict[server_key][player_id] = current_time
+        
+        # Clean up old entries (older than 2 minutes)
+        to_remove = []
+        for pid, timestamp in recent_dict[server_key].items():
+            if current_time - timestamp > 120:
+                to_remove.append(pid)
+        for pid in to_remove:
+            del recent_dict[server_key][pid]
