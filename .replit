@@ -1,0 +1,3 @@
+[nix]
+channel = "stable-24_05"
+packages = ["unzip"]
