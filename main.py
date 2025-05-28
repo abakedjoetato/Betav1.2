@@ -42,9 +42,9 @@ from bot.parsers.intelligent_log_parser import IntelligentLogParser
 load_dotenv()
 
 # Detect Railway environment
-RAILWAY_ENV = os.getenv("RAILWAY_ENVIRONMENT")
+RAILWAY_ENV = os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("RAILWAY_STATIC_URL")
 if RAILWAY_ENV:
-    print(f"🚂 Running on Railway environment: {RAILWAY_ENV}")
+    print(f"🚂 Running on Railway environment")
 else:
     print("🖥️ Running in local/development environment")
 
@@ -56,7 +56,7 @@ MODE = os.getenv("MODE", "production")
 print(f"Runtime mode set to: {MODE}")
 
 # Start keep-alive server for Railway deployment
-if MODE == "production":
+if MODE == "production" or RAILWAY_ENV:
     print("🚀 Starting Railway keep-alive server...")
     keep_alive()
 
@@ -699,9 +699,9 @@ async def main():
     tip4serv_key = os.getenv('TIP4SERV_KEY')  # Optional service key
     
     # Railway environment detection
-    railway_env = os.getenv('RAILWAY_ENV')
+    railway_env = os.getenv('RAILWAY_ENVIRONMENT') or os.getenv('RAILWAY_STATIC_URL')
     if railway_env:
-        print(f"✅ Railway environment detected: {railway_env}")
+        print(f"✅ Railway environment detected")
 
     # Validate required secrets
     if not bot_token:
