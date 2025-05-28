@@ -334,6 +334,10 @@ class EmbedFactory:
             return EmbedFactory._build_player_connection(data)
         elif embed_type == 'player_disconnection':
             return EmbedFactory._build_player_disconnection(data)
+        elif embed_type == 'player_join':
+            return EmbedFactory._build_player_connection(data)
+        elif embed_type == 'player_leave':
+            return EmbedFactory._build_player_disconnection(data)
         elif embed_type == 'mission_event':
             return EmbedFactory._build_mission_event(data)
         elif embed_type == 'airdrop_event':
@@ -342,6 +346,8 @@ class EmbedFactory:
             return EmbedFactory._build_helicrash_event(data)
         elif embed_type == 'trader_event':
             return EmbedFactory._build_trader_event(data)
+        elif embed_type == 'vehicle_event':
+            return EmbedFactory._build_vehicle_event(data)
         else:
             raise ValueError(f"Unknown embed type: {embed_type}")
 

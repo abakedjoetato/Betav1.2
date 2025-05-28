@@ -185,38 +185,22 @@ class ConnectionLifecycleParser:
     async def _create_join_embed(self, player_id: str, player_name: Optional[str] = None) -> Dict[str, Any]:
         """Create themed embed for player join event"""
         embed_data = {
-            'event_type': 'player_join',
-            'player_name': player_name or player_id,
-            'player_id': player_id,
-            'timestamp': datetime.now(timezone.utc),
-            'messages': [
-                f"🎮 {player_name or player_id} joined the server!",
-                f"🌟 Welcome {player_name or player_id} to the battlefield!",
-                f"⚔️ {player_name or player_id} has entered the game!",
-                f"🎯 {player_name or player_id} is ready for action!"
-            ]
+            'connection_id': player_name or player_id,
+            'timestamp': datetime.now(timezone.utc)
         }
         
         embed, file_attachment = await EmbedFactory.build('player_join', embed_data)
-        return {'embed': embed, 'file': file_attachment}
+        return {'type': 'player_connection', 'embed': embed, 'file': file_attachment}
 
     async def _create_leave_embed(self, player_id: str, player_name: Optional[str] = None) -> Dict[str, Any]:
         """Create themed embed for player leave event"""
         embed_data = {
-            'event_type': 'player_leave', 
-            'player_name': player_name or player_id,
-            'player_id': player_id,
-            'timestamp': datetime.now(timezone.utc),
-            'messages': [
-                f"👋 {player_name or player_id} left the server",
-                f"🚪 {player_name or player_id} disconnected from the battlefield",
-                f"⏰ {player_name or player_id} has ended their session",
-                f"🔚 {player_name or player_id} signed off"
-            ]
+            'connection_id': player_name or player_id,
+            'timestamp': datetime.now(timezone.utc)
         }
         
         embed, file_attachment = await EmbedFactory.build('player_leave', embed_data)
-        return {'embed': embed, 'file': file_attachment}
+        return {'type': 'player_disconnection', 'embed': embed, 'file': file_attachment}
 
     def get_live_counts(self, server_key: str) -> Dict[str, int]:
         """Get current live player and queue counts for a server"""

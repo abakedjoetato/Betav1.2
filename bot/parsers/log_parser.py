@@ -38,6 +38,7 @@ class LogParser:
         self.server_status: Dict[str, Dict[str, Any]] = {}  # Track real-time server status per guild_server
         self.sftp_pool: Dict[str, asyncssh.SSHClientConnection] = {}  # SFTP connection pool
         self.log_file_hashes: Dict[str, str] = {}  # Track log file rotation
+        self.player_lifecycle: Dict[str, Dict[str, Any]] = {}  # Track comprehensive player lifecycle
         
         # PLAYER CONNECTION LIFECYCLE TRACKING - Initialize new system
         self.connection_parser = ConnectionLifecycleParser(bot)
