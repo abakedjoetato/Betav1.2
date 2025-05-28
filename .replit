@@ -1,3 +1,1 @@
-[nix]
-channel = "stable-24_05"
-packages = ["unzip"]
+modules = ["python-3.11"]

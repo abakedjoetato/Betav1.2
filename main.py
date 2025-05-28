@@ -727,7 +727,6 @@ async def main():
     bot = EmeraldKillfeedBot()
 
     try:
-        logger.info(f"🤖 Bot connected to Discord as {bot.user}")
         await bot.start(bot_token)
     except KeyboardInterrupt:
         logger.info("Received keyboard interrupt, shutting down...")
