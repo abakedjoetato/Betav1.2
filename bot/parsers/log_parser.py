@@ -16,6 +16,7 @@ import aiofiles
 import discord
 import asyncssh
 from discord.ext import commands
+from .connection_parser import ConnectionLifecycleParser
 
 logger = logging.getLogger(__name__)
 
@@ -38,39 +39,25 @@ class LogParser:
         self.sftp_pool: Dict[str, asyncssh.SSHClientConnection] = {}  # SFTP connection pool
         self.log_file_hashes: Dict[str, str] = {}  # Track log file rotation
         
-        # COMPREHENSIVE PLAYER LIFECYCLE TRACKING
-        self.player_lifecycle: Dict[str, Dict[str, Any]] = {}  # Track complete player lifecycle per connection
-        self.connection_states = {
-            'QUEUE_REQUESTED': 'Player requested queue entry',
-            'QUEUE_ACCEPTED': 'Player accepted into queue',
-            'BEACON_HANDSHAKE': 'Beacon handshake initiated',
-            'BEACON_AUTHENTICATED': 'Beacon authentication completed',
-            'WORLD_AUTHENTICATING': 'World authentication in progress',
-            'WORLD_CONNECTED': 'Successfully connected to world',
-            'ONLINE_ACTIVE': 'Player online and active',
-            'DISCONNECTING': 'Player disconnecting',
-            'DISCONNECTED': 'Player fully disconnected',
-            'FAILED': 'Connection failed',
-            'TIMEOUT': 'Connection timed out'
-        }
+        # PLAYER CONNECTION LIFECYCLE TRACKING - Initialize new system
+        self.connection_parser = ConnectionLifecycleParser(bot)
 
     def _compile_log_patterns(self) -> Dict[str, re.Pattern]:
-        """Compile enhanced regex patterns for comprehensive log parsing with exhaustive player lifecycle tracking"""
+        """Compile robust regex patterns for complete player connection lifecycle tracking"""
         return {
-            # COMPREHENSIVE PLAYER LIFECYCLE TRACKING - Phase 1: Queue Management
-            'player_queue_request': re.compile(r'\[(\d{4}\.\d{2}\.\d{2}-\d{2}\.\d{2}\.\d{2}:\d{3})\].*NotifyAcceptingConnection.*Server.*accept.*from:\s*([\d\.]+):(\d+)', re.IGNORECASE),
-            'player_queue_accepted': re.compile(r'\[(\d{4}\.\d{2}\.\d{2}-\d{2}\.\d{2}\.\d{2}:\d{3})\].*NotifyAcceptingConnection accepted from:\s*([\d\.]+):(\d+)', re.IGNORECASE),
-            'player_beacon_handshake': re.compile(r'\[(\d{4}\.\d{2}\.\d{2}-\d{2}\.\d{2}\.\d{2}:\d{3})\].*SFPSOnlineBeaconHost.*RemoteAddr:\s*([\d\.]+):(\d+)', re.IGNORECASE),
-            'player_beacon_auth': re.compile(r'\[(\d{4}\.\d{2}\.\d{2}-\d{2}\.\d{2}\.\d{2}:\d{3})\].*NotifyAcceptedConnection.*SFPSOnlineBeaconHost.*RemoteAddr:\s*([\d\.]+):(\d+).*UniqueId:\s*([A-Z]+:\|[\w\-]+)', re.IGNORECASE),
+            # PLAYER CONNECTION LIFECYCLE EVENTS (4 Core Events)
             
-            # Phase 2: World Connection
-            'player_world_auth': re.compile(r'\[(\d{4}\.\d{2}\.\d{2}-\d{2}\.\d{2}\.\d{2}:\d{3})\].*NotifyAcceptedConnection.*Name:\s*World_0.*RemoteAddr:\s*([\d\.]+):(\d+)', re.IGNORECASE),
-            'player_world_spawn': re.compile(r'\[(\d{4}\.\d{2}\.\d{2}-\d{2}\.\d{2}\.\d{2}:\d{3})\].*World_0.*Join.*RemoteAddr:\s*([\d\.]+):(\d+)', re.IGNORECASE),
+            # 1. Queue Join (jq) - Player enters queue
+            'queue_join': re.compile(r'LogNet: Join request: /Game/Maps/world_0/World_0\?.*\?Name=([^&\s]+).*(?:platformid=PS5:(\w+)|eosid=\|(\w+))', re.IGNORECASE),
             
-            # Phase 3: Active Player Tracking
-            'player_online_status': re.compile(r'\[(\d{4}\.\d{2}\.\d{2}-\d{2}\.\d{2}\.\d{2}:\d{3})\].*LogOnline.*Player.*(?:joined|connected|spawned).*from:\s*([\d\.]+):(\d+)', re.IGNORECASE),
-            'player_session_start': re.compile(r'\[(\d{4}\.\d{2}\.\d{2}-\d{2}\.\d{2}\.\d{2}:\d{3})\].*LogOnline.*Session.*started.*for.*RemoteAddr:\s*([\d\.]+):(\d+)', re.IGNORECASE),
-            'player_character_spawn': re.compile(r'\[(\d{4}\.\d{2}\.\d{2}-\d{2}\.\d{2}\.\d{2}:\d{3})\].*Character.*spawned.*Player.*RemoteAddr:\s*([\d\.]+):(\d+)', re.IGNORECASE),
+            # 2. Player Joined (j2) - Player successfully connects
+            'player_joined': re.compile(r'LogOnline: Warning: Player \|(\w+) successfully registered!', re.IGNORECASE),
+            
+            # 3. Disconnect Post-Join (d1) - Standard disconnect after joining
+            'disconnect_post_join': re.compile(r'UChannel::Close: Sending CloseBunch.*UniqueId: EOS:\|(\w+)', re.IGNORECASE),
+            
+            # 4. Disconnect Pre-Join (d2) - Disconnect from queue before joining  
+            'disconnect_pre_join': re.compile(r'UChannel::Close: Sending CloseBunch.*UniqueId: (?:PS5|EOS):\|?(\w+)', re.IGNORECASE),
             
             # Phase 4: Disconnection Tracking
             'player_disconnect_cleanup': re.compile(r'\[(\d{4}\.\d{2}\.\d{2}-\d{2}\.\d{2}\.\d{2}:\d{3})\].*UChannel::CleanUp.*Connection.*RemoteAddr:\s*([\d\.]+):(\d+)', re.IGNORECASE),
@@ -822,7 +809,7 @@ class LogParser:
             logger.error(f"Failed to read dev log file: {e}")
             return None
 
-    def parse_log_line(self, line: str) -> Optional[Dict[str, Any]]:
+    async def parse_log_line(self, line: str, server_key: str, guild_id: int) -> Optional[Dict[str, Any]]:
         """Parse a single log line and extract event data with enhanced patterns"""
         line = line.strip()
         if not line:
